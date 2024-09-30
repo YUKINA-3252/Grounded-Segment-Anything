@@ -91,7 +91,6 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold, w
 
     return boxes_filt, pred_phrases
 
-
 def show_mask(mask, ax, random_color=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
@@ -115,6 +114,7 @@ def save_mask_data(output_dir, mask_list, box_list, label_list):
     mask_img = torch.zeros(mask_list.shape[-2:])
     for idx, mask in enumerate(mask_list):
         mask_img[mask.cpu().numpy()[0] == True] = value + idx + 1
+    print(mask_img)
     plt.figure(figsize=(10, 10))
     plt.imshow(mask_img.numpy())
     plt.axis('off')
@@ -136,37 +136,6 @@ def save_mask_data(output_dir, mask_list, box_list, label_list):
         })
     with open(os.path.join(output_dir, 'mask.json'), 'w') as f:
         json.dump(json_data, f)
-
-
-def save_mask_data_for_co_tracker(output_dir, image, mask_list, box_list):
-    diff_box_list_1 = torch.abs(box_list[0][2] - box_list[0][0])
-    diff_box_list_2 = torch.abs(box_list[1][2] - box_list[1][0])
-    if diff_box_list_1 > diff_box_list_2:
-        mask_paper = mask_list[0]
-        mask_box = mask_list[1]
-    else:
-        mask_paper = mask_list[1]
-        mask_box = mask_list[0]
-    # paper
-    mask_image_paper = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-    mask_np_paper = mask_paper.cpu().numpy()[0]
-    mask_image_paper[mask_np_paper] = 255
-    cv2.imwrite(os.path.join(output_dir, 'paper_mask_for_co_tracker.png'), mask_image_paper)
-    # box
-    mask_image_box = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-    mask_np_box = mask_box.cpu().numpy()[0]
-    mask_image_box[mask_np_box] = 255
-    cv2.imwrite(os.path.join(output_dir, 'box_mask_for_co_tracker.png'), mask_image_box)
-    # for idx, mask in enumerate(mask_list):
-    #     mask_np = mask_list[idx].cpu().numpy()[0]
-    #     mask_image[mask_np] = 255
-    #     # mask_image[mask_np] = gray_image[mask_np]
-    # # gray_mask_image = cv2.cvtColor(mask_image, cv2.COLOR_BGR2GRAY)
-    # cv2.imwrite(os.path.join(output_dir, 'mask_for_co_tracker.png'), mask_image)
-    # # plt.figure(figsize=(10, 10))
-    # # plt.imshow(mask_image)
-    # # plt.axis('off')
-    # # plt.savefig(os.path.join(output_dir, 'mask_for_co_tracker'), bbox_inches="tight", dpi=300, pad_inches=0.0)
 
 
 if __name__ == "__main__":
@@ -248,7 +217,6 @@ if __name__ == "__main__":
         boxes_filt[i][2:] += boxes_filt[i][:2]
 
     boxes_filt = boxes_filt.cpu()
-    print(boxes_filt)
     transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image.shape[:2]).to(device)
 
     masks, _, _ = predictor.predict_torch(
@@ -273,4 +241,3 @@ if __name__ == "__main__":
     )
 
     save_mask_data(output_dir, masks, boxes_filt, pred_phrases)
-    save_mask_data_for_co_tracker(output_dir, image, masks, boxes_filt)
