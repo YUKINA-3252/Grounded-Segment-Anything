@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+import json
 import numpy as np
 import math
 import json
@@ -29,6 +30,7 @@ from segment_anything import (
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import yaml
 
 
 def load_image(image_path):
@@ -160,11 +162,27 @@ def coords_to_depth(depth_img, img_x, img_y):
     # z = depth_img.reshape(-1)[int(track_y.round()) * width + int(track_x.round())]
     x *= z
     y *= z
-    return [x, y, z]
+    return (x, y, z)
+
+def transformation(point):
+    base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
+    base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
+    base_to_camera_transformation = np.eye(4)
+    base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
+    base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
+
+    point_ones = np.ones((point.shape[0], 1))
+    point_homogeneous = np.hstack([point, point_ones])
+    point_base_coords_homogeneous = (base_to_camera_transformation @ point_homogeneous.T).T
+    point_base_coords = point_base_coords_homogeneous[:, :3]
+    return point_base_coords
+
+def normalize(v):
+    return v / np.linalg.norm(v)
 
 
 if __name__ == "__main__":
-    directory_path = "ros/image"
+    directory_path = "ros/rope/image"
     files = [os.path.join(directory_path, f) for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
     latest_file = max(files, key=os.path.getmtime)
     latest_file_name = os.path.basename(latest_file)
@@ -188,9 +206,10 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="Ribbon over the box")
+    # parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="Ribbon over the box")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="ribbon over the stripe-patterned box. black stipe-patterned white box")
     parser.add_argument(
-        "--output_dir", "-o", type=str, default="outputs", required=False, help="output directory"
+        "--output_dir", "-o", type=str, default="ros/rope/outputs", required=False, help="output directory"
     )
 
     parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold",)
@@ -304,7 +323,7 @@ if __name__ == "__main__":
     # max_index = np.argmax(true_counts)
     # cv2.imwrite(os.path.join(output_dir, 'ribbon_mask.png'), ribbon_masks[max_index])
     sum_ribbon_mask = np.maximum.reduce(ribbon_masks)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
     sum_ribbon_mask = cv2.morphologyEx(sum_ribbon_mask, cv2.MORPH_CLOSE, kernel)
     cv2.imwrite(os.path.join(output_dir, 'ribbon_mask.png'), sum_ribbon_mask)
 
@@ -351,16 +370,18 @@ if __name__ == "__main__":
     output = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
     lines = []
+    arrow_point = []
     for i, region in enumerate(regions):
         # region_contour = np.array(region).reshape(-1, 1, 2)
         region_contour = np.array((region)).reshape((-1, 1, 2)).astype(np.int32)
         cv2.drawContours(image, [region_contour], -1, colors[i], 2)
         region_contour = np.array(region_contour, dtype=np.float64).reshape((region_contour.shape[0], region_contour.shape[2]))
         mean, eigenvectors, eigenvalues = cv2.PCACompute2(region_contour, mean=None)
-        scale = 0.1
+        scale = 0.02
         end_point = [int(mean[0][0] + scale * eigenvectors[0][0] * eigenvalues[0][0]), int(mean[0][1] + scale * eigenvectors[0][1] * eigenvalues[0][0])]
         lines.append({"p": np.array(mean[0]),"d": np.array(eigenvectors[0])})
-        cv2.arrowedLine(image, (int(mean[0][0]), int(mean[0][1])), end_point, (255, 0, 0), thickness=3)
+        arrow_point.append([int(mean[0][0]), int(mean[0][1]), end_point[0], end_point[1]])
+        cv2.arrowedLine(image, (int(mean[0][0]), int(mean[0][1])), end_point, (255, 0, 255), thickness=3)
 
     A = []
     b = []
@@ -398,17 +419,47 @@ if __name__ == "__main__":
     cy = camera_K_values[5]
 
     knot_point = np.array(coords_to_depth(depth_image, q[0], q[1])).reshape(1, 3)
+    knot_point_base_coords = transformation(knot_point)
 
-    # transformation
-    base_to_camera_transformation_translation = np.asarray([0.0970737, 0.0203574, 0.589465])
-    base_to_camera_transformation_rotation = np.asarray([[-0.017472, -0.77711, 0.629122], [-0.999846, 0.014576, -0.009763], [-0.001583, -0.629196, -0.777245]])
-    base_to_camera_transformation = np.eye(4)
-    base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
-    base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
+    with open(os.path.join("ros/standard_box", "output.yaml"), "r") as file:
+        yaml_data = yaml.safe_load(file)
 
-    knot_point_ones = np.ones((knot_point.shape[0], 1))
-    knot_point_homogeneous = np.hstack([knot_point, knot_point_ones])
-    knot_point_base_coords_homogeneous = (base_to_camera_transformation @ knot_point_homogeneous.T).T
-    knot_point_base_coords = knot_point_base_coords_homogeneous[:, :3]
+    # distance between standard box's centroid and knot
+    standard_box_centroid = np.array(yaml_data.get("centroid"))
+    # distance = math.sqrt((standard_box_centroid[0] - knot_point_base_coords[0][0]) ** 2 + (standard_box_centroid[1] - knot_point_base_coords[0][1]) ** 2 + (standard_box_centroid[2] - knot_point_base_coords[0][2]) ** 2)
+    distance = math.sqrt((standard_box_centroid[0] - knot_point_base_coords[0][0]) ** 2 + (standard_box_centroid[1] - knot_point_base_coords[0][1]) ** 2)
 
-    print(knot_point_base_coords)
+    # compare standard box and arrow direction
+    arrow_point_3d = []
+    for i in range(4):
+        start_3d_arrow_point = np.array(coords_to_depth(depth_image, np.float32(arrow_point[i][0]), np.float32(arrow_point[i][1])))
+        end_3d_arrow_point = np.array(coords_to_depth(depth_image, np.float32(arrow_point[i][2]), np.float32(arrow_point[i][3])))
+        arrow_point_3d.append([start_3d_arrow_point, end_3d_arrow_point])
+    arrow_directions = [pair[1] - pair[0] for pair in arrow_point_3d]
+    normalized_arrow_directions = [v / np.linalg.norm(v) for v in arrow_directions]
+    # normalize and caluculate angle with "tate" of standard box
+    tate = normalize(np.array(yaml_data.get("tate")))
+    angles_deg = []
+    for arrow in normalized_arrow_directions:
+        # arrow_normalized = normalize(arrow)
+        cos_theta = np.dot(arrow, tate)
+        angle = np.arccos(np.clip(cos_theta, -1.0, 1.0))
+        angle_deg = np.degrees(angle)
+        angles_deg.append(angle_deg.tolist())
+
+    # evaluation of string slack
+    cosine_yoko = np.dot(normalized_arrow_directions[0], normalized_arrow_directions[2])
+    angle_yoko = np.degrees(np.arccos(np.clip(cosine_yoko, -1.0, 1.0)))
+    cosine_tate = np.dot(normalized_arrow_directions[1], normalized_arrow_directions[3])
+    angle_tate = np.degrees(np.arccos(np.clip(cosine_tate, -1.0, 1.0)))
+
+    # write results in yaml file
+    data = {"distance": distance,
+            "angles_deg": angles_deg,
+            "angle_yoko": angle_yoko.tolist(),
+            "angle_tate": angle_tate.tolist()
+    }
+    with open(os.path.join("ros/rope", "results.yaml"), "w") as yaml_file:
+        yaml.dump(data, yaml_file, default_flow_style=False)
+    with open("ros/rope/output.txt", "w") as file:
+        json.dump(data, file)

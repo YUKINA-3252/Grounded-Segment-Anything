@@ -18,6 +18,8 @@ from GroundingDINO.groundingdino.models import build_model
 from GroundingDINO.groundingdino.util.slconfig import SLConfig
 from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 
+import yaml
+
 
 # segment anything
 from segment_anything import (
@@ -30,6 +32,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import open3d as o3d
+from sklearn.decomposition import PCA
 
 
 def load_image(image_path):
@@ -163,6 +166,8 @@ def coords_to_depth(depth_img, img_x, img_y):
     y *= z
     return [x, y, z]
 
+def point_to_plane_distance(point, normal, d):
+    return abs(np.dot(normal, point) + d) / np.linalg.norm(normal)
 
 if __name__ == "__main__":
     directory_path = "ros/standard_box/rgb_image"
@@ -189,7 +194,7 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="box")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="box with stripe pattern")
     parser.add_argument(
         "--output_dir", "-o", type=str, default="ros/standard_box/outputs", required=False, help="output directory"
     )
@@ -279,6 +284,12 @@ if __name__ == "__main__":
     standard_box_mask[standard_box_mask_np] = 255
     cv2.imwrite(os.path.join(output_dir, 'standard_box_mask.png'), standard_box_mask)
 
+    # fill
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+    output_image = cv2.morphologyEx(standard_box_mask, cv2.MORPH_CLOSE, kernel)
+    cv2.imwrite("ros/standard_box/outputs/standard_box_mask_fill.png", output_image)
+    standard_box_mask = output_image
+
     # camera info
     camera_info_file_path = os.path.join("ros/standard_box", "camera_info.txt")
     with open(camera_info_file_path, "r") as file:
@@ -307,8 +318,8 @@ if __name__ == "__main__":
     standard_box_points = np.array(standard_box_points)
 
     # transformation
-    base_to_camera_transformation_translation = np.asarray([0.0970737, 0.0203574, 0.589465])
-    base_to_camera_transformation_rotation = np.asarray([[-0.017472, -0.77711, 0.629122], [-0.999846, 0.014576, -0.009763], [-0.001583, -0.629196, -0.777245]])
+    base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
+    base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
     base_to_camera_transformation = np.eye(4)
     base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
     base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
@@ -317,6 +328,62 @@ if __name__ == "__main__":
     standard_box_points_homogeneous = np.hstack([standard_box_points, standard_box_points_ones])
     standard_box_points_base_coords_homogeneous = (base_to_camera_transformation @ standard_box_points_homogeneous.T).T
     standard_box_points_base_coords = standard_box_points_base_coords_homogeneous[:, :3]
+
+    standard_box_points_base_coords = standard_box_points_base_coords[~np.isnan(standard_box_points_base_coords).any(axis=1)]
+    centroid = np.mean(standard_box_points_base_coords, axis=0)
+    shifted_standard_box_points_base_coords = standard_box_points_base_coords - centroid
+    # cov_matrix = np.dot(shifted_standard_box_points_base_coords.T, shifted_standard_box_points_base_coords)
+    # eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    # normal_vector = eigenvectors[:, 0]
+    # _, _, vh = np.linalg.svd(shifted_standard_box_points_base_coords)
+    # normal_vector = vh[-1]
+    # d = -np.dot(normal_vector, centroid)
+
+    # threshold = 15
+
+    # inliers = []
+    # for point in standard_box_points_base_coords:
+    #     if point_to_plane_distance(point, normal_vector, d) <= threshold:
+    #         inliers.append(point)
+
+    # standard_box_points_base_coords = np.array(inliers)
+
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(standard_box_points_base_coords)
+    plane_model, inliers = point_cloud.segment_plane(distance_threshold=10,
+                                                 ransac_n=3,
+                                                 num_iterations=1000)
+    plane_points = point_cloud.select_by_index(inliers)
+    plane_points_np = np.asarray(plane_points.points)
+    standard_box_points_base_coords = np.asarray(plane_points.points)
+
+    # center point
+    normal = np.array(plane_model[:3])
+    normal = normal / np.linalg.norm(normal)
+    centroid = np.mean(plane_points_np, axis=0)
+    shifted_points = plane_points_np - centroid
+    u, s, vh = np.linalg.svd(shifted_points)
+
+    basis_x = vh[0]
+    basis_y = vh[1]
+    tate = basis_x / np.linalg.norm(vh[0])
+    yoko = basis_y / np.linalg.norm(vh[1])
+
+    projected_2d = np.dot(shifted_points, np.vstack((basis_x, basis_y)).T)
+
+    min_2d = np.min(projected_2d, axis=0)
+    max_2d = np.max(projected_2d, axis=0)
+
+    center_2d = (min_2d + max_2d) / 2
+
+    center_point = centroid + center_2d[0] * basis_x + center_2d[1] * basis_y
+
+    data = {"centroid": center_point.tolist(),
+            "tate": tate.tolist(),
+            "yoko": yoko.tolist()
+            }
+    with open(os.path.join("ros/standard_box", "output.yaml"), "w") as yaml_file:
+        yaml.dump(data, yaml_file, default_flow_style=False)
 
     # graph
     fig = plt.figure()
@@ -329,18 +396,9 @@ if __name__ == "__main__":
     ax.set_ylabel('y')
     ax.set_zlabel('z')
     ax.axis('equal')
+
+    ax.scatter(center_point[0], center_point[1], center_point[2], c='r', marker='o', s=100)
+    # knot_point =[324.48811174, 48.43470071, -546.95052783]
+    # ax.scatter(knot_point[0], knot_point[1], knot_point[2], c='g', marker='o', s=800)
     # plt.show()
-
-    standard_box_points_base_coords = standard_box_points_base_coords[~np.isnan(standard_box_points_base_coords).any(axis=1)]
-    centroid = np.mean(standard_box_points_base_coords, axis=0)
-    shifted_standard_box_points_base_coords = standard_box_points_base_coords - centroid
-    cov_matrix = np.dot(shifted_standard_box_points_base_coords.T, shifted_standard_box_points_base_coords)
-    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-    normal_vector = eigenvectors[:, 0]
-    print(centroid)
-    print(normal_vector)
-
-    ax.scatter(centroid[0], centroid[1], centroid[2], c='r', marker='o', s=800)
-    knot_point =[324.48811174, 48.43470071, -546.95052783]
-    ax.scatter(knot_point[0], knot_point[1], knot_point[2], c='g', marker='o', s=800)
-    plt.show()
+    print(center_point)
