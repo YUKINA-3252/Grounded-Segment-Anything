@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+import json
 import numpy as np
 import math
 import json
@@ -18,8 +19,7 @@ from GroundingDINO.groundingdino.models import build_model
 from GroundingDINO.groundingdino.util.slconfig import SLConfig
 from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 
-import yaml
-
+import open3d as o3d
 
 # segment anything
 from segment_anything import (
@@ -30,9 +30,7 @@ from segment_anything import (
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-
-import open3d as o3d
-from sklearn.decomposition import PCA
+import yaml
 
 
 def load_image(image_path):
@@ -151,7 +149,8 @@ def get_average_depth(depth_img, x, y, window_size=10):
     y_max = min(y + half_size + 1, depth_img.shape[1])
 
     region = depth_img[y_min:y_max, x_min:x_max]
-    valid_region = region[np.isfinite(region) & (region > 0)]
+    # valid_region = region[np.isfinite(region) & (region > 0)]
+    valid_region = region[np.isfinite(region)]
 
     return np.mean(valid_region)
 
@@ -159,18 +158,20 @@ def get_average_depth(depth_img, x, y, window_size=10):
 def coords_to_depth(depth_img, img_x, img_y):
     x = (img_x - cx) / fx
     y = (img_y - cy) / fy
-    z = get_average_depth(depth_img, int(img_x.round()), int(img_y.round()))
+    z = depth_img[int(img_y.round()), int(img_x.round())]
+    # z = get_average_depth(depth_img, int(img_x.round()), int(img_y.round()))
     # z = depth_img[int(img_x.round()),  int(img_y.round())]
     # z = depth_img.reshape(-1)[int(track_y.round()) * width + int(track_x.round())]
     x *= z
     y *= z
-    return [x, y, z]
+    return (x, y, z)
 
-def point_to_plane_distance(point, normal, d):
-    return abs(np.dot(normal, point) + d) / np.linalg.norm(normal)
+def normalize(v):
+    return v / np.linalg.norm(v)
+
 
 if __name__ == "__main__":
-    directory_path = "ros/standard_box/rgb_image"
+    directory_path = "ros/fold/rgb_image"
     files = [os.path.join(directory_path, f) for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
     latest_file = max(files, key=os.path.getmtime)
     latest_file_name = os.path.basename(latest_file)
@@ -194,9 +195,9 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="box with stripe pattern")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="white-checked patterned-paper. ")
     parser.add_argument(
-        "--output_dir", "-o", type=str, default="ros/standard_box/outputs", required=False, help="output directory"
+        "--output_dir", "-o", type=str, default="ros/fold/outputs", required=False, help="output directory"
     )
 
     parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold",)
@@ -279,111 +280,41 @@ if __name__ == "__main__":
 
     save_mask_data(output_dir, masks, boxes_filt, pred_phrases)
 
-    standard_box_mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-    standard_box_mask_np = masks[0].cpu().numpy()[0]
-    standard_box_mask[standard_box_mask_np] = 255
-    cv2.imwrite(os.path.join(output_dir, 'standard_box_mask.png'), standard_box_mask)
+    # extract paper mask
+    paper_indices = [index for index, item in enumerate(pred_phrases) if 'paper' in item]
+    paper_masks = []
+    for i in(paper_indices):
+        paper_mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+        paper_mask_np = masks[i].cpu().numpy()[0]
+        paper_mask[paper_mask_np] = 255
+        # fix_paper_mask[white_mask] = 0
+        paper_masks.append(paper_mask)
 
-    # fill
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
-    output_image = cv2.morphologyEx(standard_box_mask, cv2.MORPH_CLOSE, kernel)
-    cv2.imwrite("ros/standard_box/outputs/standard_box_mask_fill.png", output_image)
-    standard_box_mask = output_image
+    sum_paper_mask = np.maximum.reduce(paper_masks)
+    cv2.imwrite(os.path.join(output_dir, 'paper_mask.png'), sum_paper_mask)
 
-    # camera info
-    camera_info_file_path = os.path.join("ros/standard_box", "camera_info.txt")
-    with open(camera_info_file_path, "r") as file:
-        camera_info_lines = file.readlines()
-    camera_K_values = []
-    for line in camera_info_lines:
-        if line.strip().startswith("K:"):
-            camera_K_values = eval(line.split("K:")[1].strip())
-            break
-    fx = camera_K_values[0]
-    fy = camera_K_values[4]
-    cx = camera_K_values[2]
-    cy = camera_K_values[5]
+    # smooth contours
+    contours, _ = cv2.findContours(sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    smoothed_mask = np.zeros_like(sum_paper_mask)
+    epsilon_factor = 0.05
+    for contour in contours:
+        epsilon = epsilon_factor * cv2.arcLength(contour, True)
+        smoothed_contour = cv2.approxPolyDP(contour, epsilon, True)
+        cv2.drawContours(smoothed_mask, [smoothed_contour], -1, 255, thickness=cv2.FILLED)
 
-    standard_box_points = []
-    depth_image_directory_path = "ros/standard_box/depth_image"
-    depth_image_files = [f for f in os.listdir(depth_image_directory_path) if f.endswith(".png")]
-    files_with_timestamp = [(f, os.path.getmtime(os.path.join(depth_image_directory_path, f))) for f in depth_image_files]
-    latest_depth_image_file = max(files_with_timestamp, key=lambda x: x[1])
-    depth_image = o3d.io.read_image(os.path.join(depth_image_directory_path, latest_depth_image_file[0]))
-    # depth_image = cv2.imread(os.path.join(depth_image_directory_path, latest_depth_image_file[0]), cv2.IMREAD_UNCHANGED)
-    depth_image = np.asarray(depth_image, dtype=np.float32)
-    standard_box_points_indices = np.where(standard_box_mask == 255)
-    for i in range(len(standard_box_points_indices[0])):
-        standard_box_points.append(coords_to_depth(depth_image, standard_box_points_indices[1][i], standard_box_points_indices[0][i]))
-    standard_box_points = np.array(standard_box_points)
+    # detect line
+    edges = cv2.Canny(smoothed_mask, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi / 180, threshold=80, minLineLength=30, maxLineGap=10)
+    longest_line = None
+    max_length = 0
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        if length > max_length:
+            max_length = length
+            longest_line = ((x1, y1), (x2, y2))
 
-    # transformation
-    base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
-    base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
-    base_to_camera_transformation = np.eye(4)
-    base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
-    base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
-
-    standard_box_points_ones = np.ones((standard_box_points.shape[0], 1))
-    standard_box_points_homogeneous = np.hstack([standard_box_points, standard_box_points_ones])
-    standard_box_points_base_coords_homogeneous = (base_to_camera_transformation @ standard_box_points_homogeneous.T).T
-    standard_box_points_base_coords = standard_box_points_base_coords_homogeneous[:, :3]
-
-    standard_box_points_base_coords = standard_box_points_base_coords[~np.isnan(standard_box_points_base_coords).any(axis=1)]
-    centroid = np.mean(standard_box_points_base_coords, axis=0)
-    shifted_standard_box_points_base_coords = standard_box_points_base_coords - centroid
-
-    point_cloud = o3d.geometry.PointCloud()
-    point_cloud.points = o3d.utility.Vector3dVector(standard_box_points_base_coords)
-    plane_model, inliers = point_cloud.segment_plane(distance_threshold=10,
-                                                 ransac_n=3,
-                                                 num_iterations=1000)
-    plane_points = point_cloud.select_by_index(inliers)
-    plane_points_np = np.asarray(plane_points.points)
-    standard_box_points_base_coords = np.asarray(plane_points.points)
-
-    # center point
-    normal = np.array(plane_model[:3])
-    normal = normal / np.linalg.norm(normal)
-    centroid = np.mean(plane_points_np, axis=0)
-    shifted_points = plane_points_np - centroid
-    u, s, vh = np.linalg.svd(shifted_points)
-
-    basis_x = vh[0]
-    basis_y = vh[1]
-    tate = basis_x / np.linalg.norm(vh[0])
-    yoko = basis_y / np.linalg.norm(vh[1])
-
-    projected_2d = np.dot(shifted_points, np.vstack((basis_x, basis_y)).T)
-
-    min_2d = np.min(projected_2d, axis=0)
-    max_2d = np.max(projected_2d, axis=0)
-
-    center_2d = (min_2d + max_2d) / 2
-
-    center_point = centroid + center_2d[0] * basis_x + center_2d[1] * basis_y
-
-    data = {"centroid": center_point.tolist(),
-            "tate": tate.tolist(),
-            "yoko": yoko.tolist()
-            }
-    with open(os.path.join("ros/standard_box", "output.yaml"), "w") as yaml_file:
-        yaml.dump(data, yaml_file, default_flow_style=False)
-
-    # graph
-    fig = plt.figure()
-    ax = fig.add_subplot(111,projection='3d')
-    x = standard_box_points_base_coords[:, 0]
-    y = standard_box_points_base_coords[:, 1]
-    z = standard_box_points_base_coords[:, 2]
-    ax.scatter(x, y, z, c='b', marker='o', alpha=0.5, s=0.1)
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_zlabel('z')
-    ax.axis('equal')
-
-    ax.scatter(center_point[0], center_point[1], center_point[2], c='r', marker='o', s=100)
-    # knot_point =[324.48811174, 48.43470071, -546.95052783]
-    # ax.scatter(knot_point[0], knot_point[1], knot_point[2], c='g', marker='o', s=800)
-    # plt.show()
-    print(center_point)
+    output_image = cv2.imread("ros/fold/outputs/raw_image.jpg")
+    (x1, y1), (x2, y2) = longest_line
+    cv2.line(output_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    cv2.imwrite("ros/fold/tmp.jpg", output_image)
