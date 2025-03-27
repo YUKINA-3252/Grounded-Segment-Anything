@@ -8,6 +8,7 @@ import math
 import json
 import torch
 from PIL import Image
+from scipy.ndimage import shift
 from skimage.feature.texture import graycomatrix, graycoprops
 
 sys.path.append(os.path.join(os.getcwd(), "GroundingDINO"))
@@ -258,8 +259,11 @@ def detect_horizontal_changes(image, mask, num_slices=30, threshold=30):
 
 
 if __name__ == "__main__":
-    directory_path = "ros/fold/pattern/rgb"
-    latest_file_path = os.path.join(directory_path, 'top_paper_2.jpg')
+    directory_path = "ros/fold/rgb_image"
+    files = [os.path.join(directory_path, f) for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
+    latest_file = max(files, key=os.path.getmtime)
+    latest_file_name = os.path.basename(latest_file)
+    latest_file_path = os.path.join(directory_path, f'{latest_file_name}')
 
     parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
     parser.add_argument("--config", type=str, required=False, help="path to config file", default="GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
@@ -382,95 +386,196 @@ if __name__ == "__main__":
     top_paper_2 = cv2.cvtColor(top_paper_2, cv2.COLOR_BGR2RGB)
     cv2.imwrite("ros/fold/pattern/top_paper_2.jpg", top_paper_2)
 
-    # contours, _ = cv2.findContours(sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    # max_contour_paper = max(contours, key=cv2.contourArea)
-    # hull = cv2.convexHull(max_contour_paper)
-    # hull_mask = np.zeros_like(sum_paper_mask)
-    # cv2.drawContours(hull_mask, [hull], 0, 255, -1)
-    # convex_defects = cv2.subtract(hull_mask, sum_paper_mask)
-    # num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(convex_defects)
-    # sizes = stats[:, cv2.CC_STAT_AREA]
-    # largest_label = 1 + np.argmax(sizes[1:])
-    # largest_convex_defects = np.zeros_like(convex_defects)
-    # largest_convex_defects[labels == largest_label] = 255
-    # visualization = cv2.cvtColor(largest_convex_defects, cv2.COLOR_GRAY2BGR)
-    # cv2.imwrite("ros/fold/non.jpg", visualization)
-    # coordinates = np.column_stack(np.where(largest_convex_defects > 0))
-    # max_x_idx = np.argmax(coordinates[:, 1])
-    # max_x_point = coordinates[max_x_idx]
-    # # min_x_idx = np.argmin(coordinates[:, 1])
-    # # min_x_point = coordinates[min_x_idx]
-    # # extract paper mask
-    # extracted_sum_paper_mask = np.zeros_like(sum_paper_mask)
-    # coordinates = np.column_stack(np.where(sum_paper_mask > 0))
-    # for y, x in coordinates:
-    #     if x >= max_x_point[1]:
-    #     # if x <= min_x_point[1]:
-    #         extracted_sum_paper_mask[y, x] = 255
-    # extracted_img = cv2.cvtColor(extracted_sum_paper_mask, cv2.COLOR_GRAY2BGR)
-    # cv2.imwrite("ros/fold/pattern/extracted.jpg", extracted_img)
-    # contours, _ = cv2.findContours(extracted_sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    # max_contour_paper = max(contours, key=cv2.contourArea)
-    # epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
-    # approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
-    # if len(approx) != 4:
-    #     raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
-    # vertices_paper = approx[:, 0, :]
-    # left_top = vertices_paper[np.argmin(vertices_paper[:, 0] + vertices_paper[:, 1])]
-    # right_top = vertices_paper[np.argmax(vertices_paper[:, 0] - vertices_paper[:, 1])]
-    # left_bottom = vertices_paper[np.argmin(vertices_paper[:, 0] - vertices_paper[:, 1])]
-    # right_bottom = vertices_paper[np.argmax(vertices_paper[:, 0] + vertices_paper[:, 1])]
-    # pts = np.float32([left_top, right_top, left_bottom, right_bottom])
+    # detect pattern change
+    imageA = cv2.imread('ros/fold/pattern/mask_top_paper_1.png')
+    imageB = cv2.imread('ros/fold/pattern/mask_top_paper_2.png')
 
-    # # depth
-    # # camera info
-    # camera_info_file_path = os.path.join("ros/fold", "camera_info.txt")
-    # with open(camera_info_file_path, "r") as file:
-    #     camera_info_lines = file.readlines()
-    # camera_K_values = []
-    # for line in camera_info_lines:
-    #     if line.strip().startswith("K:"):
-    #         camera_K_values = eval(line.split("K:")[1].strip())
-    #         break
-    # fx = camera_K_values[0]
-    # fy = camera_K_values[4]
-    # cx = camera_K_values[2]
-    # cy = camera_K_values[5]
+    imageA_copy = imageA.copy()
+    imageB_copy = imageB.copy()
 
-    # depth_image_directory_path = "ros/fold/pattern/depth/2nd_tape_line.png"
-    # depth_image = o3d.io.read_image(depth_image_directory_path)
-    # depth_image = np.asarray(depth_image, dtype=np.float32)
+    gray = cv2.cvtColor(imageA_copy, cv2.COLOR_BGR2GRAY)
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour_paper = max(contours, key=cv2.contourArea)
+    epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
+    approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
+    if len(approx) != 4:
+        raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
+    vertices_paper = approx[:, 0, :]
+    vertices_paper = np.array(vertices_paper)
+    A_left_top = vertices_paper[np.argmin(vertices_paper[:, 0] + vertices_paper[:, 1])]
+    A_left_bottom = vertices_paper[np.argmin(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    A_right_top = vertices_paper[np.argmax(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    A_right_bottom = vertices_paper[np.argmax(vertices_paper[:, 0] + vertices_paper[:, 1])]
 
-    # pts_3d = []
-    # for i in range(4):
-    #     pts_3d.append(coords_to_depth(depth_image, pts[i][0], pts[i][1]))
-    # pts_3d = np.array(pts_3d)
+    grayB = cv2.cvtColor(imageB_copy, cv2.COLOR_BGR2GRAY)
+    contours, _ = cv2.findContours(grayB, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour_paper = max(contours, key=cv2.contourArea)
+    hull = cv2.convexHull(max_contour_paper)
+    hull_mask = np.zeros_like(gray)
+    cv2.drawContours(hull_mask, [hull], 0, 255, -1)
+    convex_defects = cv2.subtract(hull_mask, grayB)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(convex_defects)
+    sizes = stats[:, cv2.CC_STAT_AREA]
+    largest_label = 1 + np.argmax(sizes[1:])
+    largest_convex_defects = np.zeros_like(convex_defects)
+    largest_convex_defects[labels == largest_label] = 255
+    coordinates = np.column_stack(np.where(largest_convex_defects > 0))
+    max_x_idx = np.argmax(coordinates[:, 1])
+    max_x_point = coordinates[max_x_idx]
+    # extract paper mask
+    extracted_imageB_mask = np.zeros_like(grayB)
+    coordinates = np.column_stack(np.where(grayB > 0))
+    for y, x in coordinates:
+        if x >= max_x_point[1]:
+            extracted_imageB_mask[y, x] = 255
+    contours, _ = cv2.findContours(extracted_imageB_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour_paper = max(contours, key=cv2.contourArea)
+    epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
+    approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
+    if len(approx) != 4:
+        raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
+    vertices_paper = approx[:, 0, :]
+    vertices_paper = np.array(vertices_paper)
+    B_left_top = vertices_paper[np.argmin(vertices_paper[:, 0] + vertices_paper[:, 1])]
+    B_left_bottom = vertices_paper[np.argmin(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    B_right_top = vertices_paper[np.argmax(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    B_right_bottom = vertices_paper[np.argmax(vertices_paper[:, 0] + vertices_paper[:, 1])]
+    print(B_left_top, B_left_bottom, B_right_top, B_right_bottom)
 
-    # # transformation
-    # base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
-    # base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
-    # base_to_camera_transformation = np.eye(4)
-    # base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
-    # base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
+    # shift imageA
+    delta_x = B_right_bottom[0] - A_right_bottom[0]
+    delta_y = B_right_bottom[1] - B_right_bottom[1]
+    imageA = np.array(Image.open('ros/fold/pattern/top_paper_1.jpg'))
+    imageA_mask = np.array(Image.open('ros/fold/pattern/mask_top_paper_1.png'))
+    shifted_imageA = np.zeros_like(imageA)
+    for channel in range(3):
+        shifted_imageA[..., channel] = shift(
+            imageA[..., channel],
+            shift=[delta_y, delta_x],
+            mode="constant",
+            cval=0)
+    shifted_imageA_mask = shift(imageA_mask, shift=[delta_y, delta_x], mode='constant', cval=0)
+    shifted_imageA = Image.fromarray(shifted_imageA.astype(np.uint8))
+    shifted_imageA_mask = Image.fromarray(shifted_imageA_mask.astype(np.uint8))
+    shifted_imageA.save("ros/fold/pattern/shifted_top_paper_1.jpg")
+    shifted_imageA_mask.save("ros/fold/pattern/shifted_mask_top_paper_1.jpg")
+    imageA = cv2.imread('ros/fold/pattern/shifted_mask_top_paper_1.jpg')
+    gray = cv2.cvtColor(imageA, cv2.COLOR_BGR2GRAY)
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour_paper = max(contours, key=cv2.contourArea)
+    epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
+    approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
+    if len(approx) != 4:
+        raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
+    vertices_paper = approx[:, 0, :]
+    vertices_paper = np.array(vertices_paper)
+    A_left_top = vertices_paper[np.argmin(vertices_paper[:, 0] + vertices_paper[:, 1])]
+    A_left_bottom = vertices_paper[np.argmin(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    A_right_top = vertices_paper[np.argmax(vertices_paper[:, 0] - vertices_paper[:, 1])]
+    A_right_bottom = vertices_paper[np.argmax(vertices_paper[:, 0] + vertices_paper[:, 1])]
+    print(A_left_top, A_left_bottom, A_right_top, A_right_bottom)
 
-    # pts_ones = np.ones((pts_3d.shape[0], 1))
-    # pts_homogeneous = np.hstack([pts_3d, pts_ones])
-    # pts_base_coords_homogeneous = (base_to_camera_transformation @ pts_homogeneous.T).T
-    # pts_base_coords = pts_base_coords_homogeneous[:, :3]
-    # pts_base_coords = pts_base_coords[~np.isnan(pts_base_coords).any(axis=1)]
-    # print(pts_base_coords)
+    left_top_x = A_left_top[0] if A_left_top[0] > B_left_top[0] else B_left_top[0]
+    left_top_y = A_left_top[1] if A_left_top[1] > B_left_top[1] else B_left_top[1]
+    left_top = np.array([left_top_x, left_top_y])
+    left_bottom_x = A_left_bottom[0] if A_left_bottom[0] > B_left_bottom[0] else B_left_bottom[0]
+    left_bottom_y = A_left_bottom[1] if A_left_bottom[1] < B_left_bottom[1] else B_left_bottom[1]
+    left_bottom = np.array([left_bottom_x, left_bottom_y])
+    right_top_x = A_right_top[0] if A_right_top[0] > B_right_top[0] else B_right_top[0]
+    right_top_y = A_right_top[1] if A_right_top[1] > B_right_top[1] else B_right_top[1]
+    right_top = np.array([right_top_x, right_top_y])
+    right_bottom_x = A_right_bottom[0] if A_right_bottom[0] > B_right_bottom[0] else B_right_bottom[0]
+    right_bottom_y = A_right_bottom[1] if A_right_bottom[1] < B_right_bottom[1] else B_right_bottom[1]
+    right_bottom = np.array([right_bottom_x, right_bottom_y])
+    mask_points = np.array([left_top, left_bottom, right_bottom, right_top])
+    mask = np.zeros(imageA.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [mask_points], 255)
+    imageA = cv2.imread('ros/fold/pattern/shifted_top_paper_1.jpg')
+    imageB = cv2.imread('ros/fold/pattern/top_paper_2.jpg')
+    imageA_crop = cv2.bitwise_and(imageA, imageA, mask=mask)
+    imageB_crop = cv2.bitwise_and(imageB, imageB, mask=mask)
+    cv2.imwrite("ros/fold/pattern/crop_top_paper_1.jpg", imageA_crop)
+    cv2.imwrite("ros/fold/pattern/crop_top_paper_2.jpg", imageB_crop)
 
-    # image_for_dpi = Image.open('ros/fold/pattern/rgb/2nd_tape_line.jpg')
-    # dpi = image_for_dpi.info.get('dpi', (72, 72))
 
-    # width = int(pts_base_coords[np.argmax(pts_base_coords[:, 1])][1] - pts_base_coords[np.argmin(pts_base_coords[:, 1])][1])
-    # height = int(pts_base_coords[np.argmax(pts_base_coords[:, 0])][0] - pts_base_coords[np.argmin(pts_base_coords[:, 0])][0])
-    # pixel_width = int(width / 25.4 * 72)
-    # pixel_height = int(height / 25.4 * 72)
+    imgA = cv2.cvtColor(imageA_crop, cv2.COLOR_BGR2RGB)
+    imgB = cv2.cvtColor(imageB_crop, cv2.COLOR_BGR2RGB)
 
-    # pts = np.float32([[left_top], [right_top], [left_bottom], [right_bottom]])
-    # dst_pts = np.array([[[0, 0]], [[pixel_width, 0]], [[0, pixel_height]], [[pixel_width, pixel_height]]], dtype="int32")
-    # matrix = cv2.getPerspectiveTransform(pts, np.float32(dst_pts))
-    # result = cv2.warpPerspective(image, matrix, (pixel_width, pixel_height))
-    # result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-    # cv2.imwrite("ros/fold/pattern/result2.jpg", result)
+    hA, wA, cA = imgA.shape[:3]
+    hB, wB, cA = imgB.shape [:3]
+
+    akaze = cv2.AKAZE_create()
+
+    kpA, desA = akaze.detectAndCompute(imgA,None)
+    kpB, desB = akaze.detectAndCompute(imgB,None)
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(desA,desB)
+    matches = sorted(matches, key = lambda x:x.distance)
+    good = matches[:int(len(matches) * 0.15)]
+    src_pts = np.float32([kpA[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+    dst_pts = np.float32([kpB[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+    M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC,5.0)
+    imgB_transform = cv2.warpPerspective(imgB, M, (wA, hA))
+    result = cv2.absdiff(imgA, imgB_transform)
+    result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+    _, result_bin = cv2.threshold(result_gray, 50, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((2,2),np.uint8)
+    result_bin = cv2.morphologyEx(result_bin, cv2.MORPH_OPEN, kernel)
+    result_bin_rgb = cv2.cvtColor(result_bin, cv2.COLOR_GRAY2RGB)
+    result_add = cv2.addWeighted(imgA, 0.3, result_bin_rgb, 0.7, 2.2)
+    cv2.imwrite("ros/fold/pattern/result.jpg", result_add)
+
+    # detect pattern change
+    # camera info
+    camera_info_file_path = os.path.join("ros/fold", "camera_info.txt")
+    with open(camera_info_file_path, "r") as file:
+        camera_info_lines = file.readlines()
+    camera_K_values = []
+    for line in camera_info_lines:
+        if line.strip().startswith("K:"):
+            camera_K_values = eval(line.split("K:")[1].strip())
+            break
+    fx = camera_K_values[0]
+    fy = camera_K_values[4]
+    cx = camera_K_values[2]
+    cy = camera_K_values[5]
+
+    # depth image
+    depth_image_directory_path = "ros/fold/depth_image"
+    depth_image_files = [f for f in os.listdir(depth_image_directory_path) if f.endswith(".png")]
+    files_with_timestamp = [(f, os.path.getmtime(os.path.join(depth_image_directory_path, f))) for f in depth_image_files]
+    latest_depth_image_file = max(files_with_timestamp, key=lambda x: x[1])
+    depth_image = o3d.io.read_image(os.path.join(depth_image_directory_path, latest_depth_image_file[0]))
+    depth_image = np.asarray(depth_image, dtype=np.float32)
+
+    valid_column = []
+    for i in range(result_bin.shape[1]):
+        valid_row = 0
+        for j in range(result_bin.shape[0]):
+            if result_bin[j, i] == 255:
+                valid_row += 1
+        if valid_row > 50:
+            valid_column.append(i)
+    for v_valid_column in valid_column:
+        cv2.line(result_add, (v_valid_column,0), (v_valid_column,479), (0, 0,255))
+    cv2.imwrite("ros/fold/pattern/line.jpg", result_add)
+    tape_point = []
+    tape_point.append(coords_to_depth(depth_image, np.float64(valid_column[-1]), (np.mean(mask_points, axis=0)[1])))
+    tape_point.append(coords_to_depth(depth_image, np.float64(valid_column[-2]), (np.mean(mask_points, axis=0)[1])))
+    tape_point = np.array(tape_point)
+
+    # transformation
+    base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
+    base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
+    base_to_camera_transformation = np.eye(4)
+    base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
+    base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
+
+    tape_point_one = np.ones((tape_point.shape[0], 1))
+    tape_point_homogeneous = np.hstack([tape_point, tape_point_one])
+    tape_point_base_coords_homogeneous = (base_to_camera_transformation @ tape_point_homogeneous.T).T
+    tape_point_base_coords = tape_point_base_coords_homogeneous[:, :3]
+    tape_point_base_coords = tape_point_base_coords[~np.isnan(tape_point_base_coords).any(axis=1)]
+    data = {"tape_point_2": tape_point_base_coords[0].tolist()}
+    with open(os.path.join("ros/fold", "tape_point_2.yaml"), "w") as yaml_file:
+        yaml.dump(data, yaml_file, default_flow_style=False)

@@ -195,7 +195,7 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
    )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="floral patterned-paper. ")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="different-colored-dots- patterned-paper. white-paper. box")
     parser.add_argument(
         "--output_dir", "-o", type=str, default="ros/fold/outputs", required=False, help="output directory"
     )
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     save_mask_data(output_dir, masks, boxes_filt, pred_phrases)
 
     # extract paper mask
-    paper_indices = [index for index, item in enumerate(pred_phrases) if 'paper' in item]
+    paper_indices = [index for index, item in enumerate(pred_phrases) if 'paper' and 'pattern' in item]
     paper_masks = []
     for i in(paper_indices):
         paper_mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
@@ -320,21 +320,6 @@ if __name__ == "__main__":
     cv2.imwrite("ros/fold/outputs/paper_mask_fill.png", output_image)
     sum_paper_mask = output_image
 
-    # estimate paper rectangular
-    # contours_paper, _ = cv2.findContours(sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    # max_contour_paper = max(contours_paper, key=cv2.contourArea)
-    # epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
-    # approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
-    # if len(approx) != 4:
-    #     raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
-    # vertices_paper = approx[:, 0, :]
-    # print(vertices_paper)
-    # paper_points = []
-    # for i in range(4):
-    #     # print(coords_to_depth(depth_image, vertices_paper[i][0], vertices_paper[i][1]))
-    #     paper_points.append(coords_to_depth(depth_image, vertices_paper[i][0], vertices_paper[i][1]))
-    # paper_points = np.array(paper_points)
-
     contours, _ = cv2.findContours(sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         raise ValueError("No contours found in the mask image.")
@@ -365,11 +350,6 @@ if __name__ == "__main__":
     base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
     base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
 
-    # paper_points_ones = np.ones((paper_points.shape[0], 1))
-    # paper_points_homogeneous = np.hstack([paper_points, paper_points_ones])
-    # paper_points_base_coords_homogeneous = (base_to_camera_transformation @ paper_points_homogeneous.T).T
-    # paper_points_base_coords = paper_points_base_coords_homogeneous[:, :3]
-    # paper_points_base_coords = paper_points_base_coords[~np.isnan(paper_points_base_coords).any(axis=1)]
     tape_point_one = np.ones((tape_point.shape[0], 1))
     tape_point_homogeneous = np.hstack([tape_point, tape_point_one])
     tape_point_base_coords_homogeneous = (base_to_camera_transformation @ tape_point_homogeneous.T).T
@@ -378,23 +358,3 @@ if __name__ == "__main__":
     data = {"tape_point_1": tape_point_base_coords[0].tolist()}
     with open(os.path.join("ros/fold", "tape_point_1.yaml"), "w") as yaml_file:
         yaml.dump(data, yaml_file, default_flow_style=False)
-
-    # # graph
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111,projection='3d')
-    # x_paper = paper_points_base_coords[:, 0]
-    # y_paper = paper_points_base_coords[:, 1]
-    # z_paper = paper_points_base_coords[:, 2]
-    # ax.scatter(x_paper, y_paper, z_paper, c='r', marker='o', alpha=0.5, s=20)
-    # num_points = 100
-    # for i in range(4):
-    #     x_values = np.linspace(paper_points_base_coords[i%4][0], paper_points_base_coords[(i+1)%4][0], num_points)
-    #     y_values = np.linspace(paper_points_base_coords[i%4][1], paper_points_base_coords[(i+1)%4][1], num_points)
-    #     z_values = np.linspace(paper_points_base_coords[i%4][2], paper_points_base_coords[(i+1)%4][2], num_points)
-    #     ax.scatter(x_values, y_values, z_values, c='orange', s=1)
-
-    # ax.set_xlabel('x')
-    # ax.set_ylabel('y')
-    # ax.set_zlabel('z')
-    # ax.axis('equal')
-    # plt.show()

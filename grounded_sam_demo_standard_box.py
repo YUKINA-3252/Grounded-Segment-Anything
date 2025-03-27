@@ -194,7 +194,7 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="box with stripe pattern")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="plaid pattern box")
     parser.add_argument(
         "--output_dir", "-o", type=str, default="ros/standard_box/outputs", required=False, help="output directory"
     )

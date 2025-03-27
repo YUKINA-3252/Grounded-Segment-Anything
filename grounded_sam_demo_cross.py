@@ -40,7 +40,6 @@ def transformation(point):
     point_base_coords_homogeneous = (base_to_camera_transformation @ point_homogeneous.T).T
     point_base_coords = point_base_coords_homogeneous[:, :3]
     return point_base_coords
-
 def normalize(v):
     return v / np.linalg.norm(v)
 
@@ -48,7 +47,7 @@ def normalize(v):
 image_path = "ros/rope/outputs/box_mask.png"
 mask = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
-kernel = np.ones((13, 13), np.uint8)
+kernel = np.ones((15, 15), np.uint8)
 filled_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 contours, _ = cv2.findContours(filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -124,6 +123,7 @@ for i, region in enumerate(regions):
     region_contour = np.array(region_contour, dtype=np.float64).reshape((region_contour.shape[0], region_contour.shape[2]))
     mean, eigenvectors, eigenvalues = cv2.PCACompute2(region_contour, mean=None)
     scale = 0.02
+    print(mean)
     end_point = [int(mean[0][0] + scale * eigenvectors[0][0] * eigenvalues[0][0]), int(mean[0][1] + scale * eigenvectors[0][1] * eigenvalues[0][0])]
     lines.append({"p": np.array(mean[0]),"d": np.array(eigenvectors[0])})
     arrow_point.append([int(mean[0][0]), int(mean[0][1]), end_point[0], end_point[1]])

@@ -8,7 +8,6 @@ import math
 import json
 import torch
 from PIL import Image
-from skimage.feature.texture import graycomatrix, graycoprops
 
 sys.path.append(os.path.join(os.getcwd(), "GroundingDINO"))
 sys.path.append(os.path.join(os.getcwd(), "segment_anything"))
@@ -33,7 +32,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import yaml
 
-from sklearn.preprocessing import StandardScaler
 
 def load_image(image_path):
     # load image
@@ -171,72 +169,6 @@ def coords_to_depth(depth_img, img_x, img_y):
 def normalize(v):
     return v / np.linalg.norm(v)
 
-def detect_discontinuity_in_region(image, mask, patch_size=20, threshold=0.3):
-    h, w, _ = image.shape
-    discontinuity_map = np.zeros((h, w), dtype=np.uint8)
-
-    binary_mask = (mask > 0).astype(np.uint8)
-
-    lab_image = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
-
-    for y in range(0, h - patch_size, patch_size):
-        for x in range(0, w - patch_size, patch_size):
-            patch_mask = binary_mask[y:y + patch_size, x:x + patch_size]
-            if np.sum(patch_mask) == 0:
-                continue
-
-            patch = lab_image[y:y + patch_size, x:x + patch_size]
-            patch_mean = np.mean(patch, axis=(0, 1))
-
-            if x + patch_size < w:
-                right_patch = lab_image[y:y + patch_size, x + patch_size:x + 2 * patch_size]
-                right_patch_mask = binary_mask[y:y + patch_size, x + patch_size:x + 2 * patch_size]
-                if np.sum(right_patch_mask) > 0:
-                    right_mean = np.mean(right_patch, axis=(0, 1))
-                    diff_right = np.linalg.norm(patch_mean - right_mean)
-                    if diff_right > threshold * 100:
-                        discontinuity_map[y:y + patch_size, x + patch_size - patch_size // 2:x + patch_size] = 255
-
-            if y + patch_size < h:
-                bottom_patch = lab_image[y + patch_size:y + 2 * patch_size, x:x + patch_size]
-                bottom_patch_mask = binary_mask[y + patch_size:y + 2 * patch_size, x:x + patch_size]
-                if np.sum(bottom_patch_mask) > 0:
-                    bottom_mean = np.mean(bottom_patch, axis=(0, 1))
-                    diff_bottom = np.linalg.norm(patch_mean - bottom_mean)
-                    if diff_bottom > threshold * 100:
-                        discontinuity_map[y + patch_size - patch_size // 2:y + patch_size, x:x + patch_size] = 255
-
-    result_image = image.copy()
-    result_image[discontinuity_map == 255] = [0, 0, 255]
-
-    return result_image
-
-
-def detect_edges_in_region(image, mask, low_threshold=50, high_threshold=150):
-    if len(image.shape) == 3:
-        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_image = image
-
-    masked_image = cv2.bitwise_and(gray_image, gray_image, mask=mask)
-
-    edges = cv2.Canny(masked_image, low_threshold, high_threshold)
-
-    return edges
-
-def highlight_changes(mask_image, rgb_diff, X, Y, H, W):
-    # row_num = H // step_height
-    # colomn_num = W // step_width
-    # for i in range(row_num):
-    #     for j in range(colomn_num):
-    #         cv2.rectangle(image, (x + step_width*j, y + step_height*i), (x + step_width*(j+1), y + step_height*(i+1)), (0, 0, 255), 2)
-    # return image
-    mask_image_cp = cv2.cvtColor(mask_image, cv2.COLOR_GRAY2BGR)
-    expanded_rgb_diff = np.zeros((mask_image.shape[0], mask_image.shape[1]), dtype=mask_image.dtype)
-    expanded_rgb_diff[Y:Y+H, X:X+W-1] = rgb_diff
-    condition = expanded_rgb_diff >= 200
-    mask_image_cp[condition] = [0, 0, 255]
-    return mask_image_cp
 
 if __name__ == "__main__":
     directory_path = "ros/fold/rgb_image"
@@ -244,7 +176,6 @@ if __name__ == "__main__":
     latest_file = max(files, key=os.path.getmtime)
     latest_file_name = os.path.basename(latest_file)
     latest_file_path = os.path.join(directory_path, f'{latest_file_name}')
-
 
     parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
     parser.add_argument("--config", type=str, required=False, help="path to config file", default="GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
@@ -264,7 +195,7 @@ if __name__ == "__main__":
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="colorful circle pattern paper")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="floral pattern box. paper.")
     parser.add_argument(
         "--output_dir", "-o", type=str, default="ros/fold/outputs", required=False, help="output directory"
     )
@@ -349,20 +280,214 @@ if __name__ == "__main__":
 
     save_mask_data(output_dir, masks, boxes_filt, pred_phrases)
 
+    # extract box and paper mask
+    boxes_filt_np = boxes_filt.cpu().numpy()
+    box_indices = [index for index, item in enumerate(pred_phrases) if 'box' in item]
+    box_area = abs(boxes_filt_np[box_indices[0]][2] - boxes_filt_np[box_indices[0]][0]) * np.abs(boxes_filt_np[box_indices[0]][3] - boxes_filt_np[box_indices[0]][1])
+    mask_box = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+    mask_np_box = masks[box_indices[0]].cpu().numpy()[0]
+    mask_box[mask_np_box] = 255
+    x1 = int(min(boxes_filt_np[box_indices[0]][0], boxes_filt_np[box_indices[0]][2]))
+    x2 = int(max(boxes_filt_np[box_indices[0]][0], boxes_filt_np[box_indices[0]][2]))
+    y1 = int(min(boxes_filt_np[box_indices[0]][1], boxes_filt_np[box_indices[0]][3]))
+    y2 = int(max(boxes_filt_np[box_indices[0]][1], boxes_filt_np[box_indices[0]][3]))
+    cv2.imwrite(os.path.join(output_dir, 'box_mask.png'), mask_box)
+
     # paper mask
-    paper_indices = [index for index, item in enumerate(pred_phrases) if 'paper' and 'colorful' and 'circle' and 'pattern' in item]
+    paper_indices = [index for index, item in enumerate(pred_phrases) if 'paper' in item]
     paper_masks = []
     for i in(paper_indices):
         paper_mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
         paper_mask_np = masks[i].cpu().numpy()[0]
         paper_mask[paper_mask_np] = 255
+        # fix_paper_mask[white_mask] = 0
         paper_masks.append(paper_mask)
+    paper_masks.append(mask_box)
 
     sum_paper_mask = np.maximum.reduce(paper_masks)
+    only_paper_mask = np.copy(sum_paper_mask)
+    only_paper_mask[(sum_paper_mask == 255) & (mask_box == 255)] = 0
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
     sum_paper_mask = cv2.morphologyEx(sum_paper_mask, cv2.MORPH_CLOSE, kernel)
-    cv2.imwrite('ros/fold/pattern/mask_top_paper_1.png', sum_paper_mask)
+    cv2.imwrite(os.path.join(output_dir, 'paper_mask.png'), sum_paper_mask)
+    cv2.imwrite(os.path.join(output_dir, 'only_paper_mask.png'), only_paper_mask)
 
-    top_paper = cv2.bitwise_and(image, image, mask=sum_paper_mask)
-    top_paper = cv2.cvtColor(top_paper, cv2.COLOR_BGR2RGB)
-    cv2.imwrite("ros/fold/pattern/top_paper_1.jpg", top_paper)
+    # get 3d info of box
+    # camera info
+    camera_info_file_path = os.path.join("ros/fold", "camera_info.txt")
+    with open(camera_info_file_path, "r") as file:
+        camera_info_lines = file.readlines()
+    camera_K_values = []
+    for line in camera_info_lines:
+        if line.strip().startswith("K:"):
+            camera_K_values = eval(line.split("K:")[1].strip())
+            break
+    fx = camera_K_values[0]
+    fy = camera_K_values[4]
+    cx = camera_K_values[2]
+    cy = camera_K_values[5]
+
+    box_points = []
+    depth_image_directory_path = "ros/fold/depth_image"
+    depth_image_files = [f for f in os.listdir(depth_image_directory_path) if f.endswith(".png")]
+    files_with_timestamp = [(f, os.path.getmtime(os.path.join(depth_image_directory_path, f))) for f in depth_image_files]
+    latest_depth_image_file = max(files_with_timestamp, key=lambda x: x[1])
+    depth_image = o3d.io.read_image(os.path.join(depth_image_directory_path, latest_depth_image_file[0]))
+    # depth_image = cv2.imread(os.path.join(depth_image_directory_path, latest_depth_image_file[0]), cv2.IMREAD_UNCHANGED)
+    depth_image = np.asarray(depth_image, dtype=np.float32)
+    box_points_indices = np.where(mask_box == 255)
+    for i in range(len(box_points_indices[0])):
+        box_points.append(coords_to_depth(depth_image, box_points_indices[1][i], box_points_indices[0][i]))
+    box_points = np.array(box_points)
+
+    # transformation
+    base_to_camera_transformation_translation = np.asarray([0.099087, 0.020357, 0.56758])
+    base_to_camera_transformation_rotation = np.asarray([[0.017396, -0.896664, 0.442385], [-0.999853, 0.014582, -0.009762], [0.002302, -0.442487, -0.89678]])
+    base_to_camera_transformation = np.eye(4)
+    base_to_camera_transformation[:3, :3] = base_to_camera_transformation_rotation
+    base_to_camera_transformation[:3, 3] = base_to_camera_transformation_translation
+
+    box_points_ones = np.ones((box_points.shape[0], 1))
+    box_points_homogeneous = np.hstack([box_points, box_points_ones])
+    box_points_base_coords_homogeneous = (base_to_camera_transformation @ box_points_homogeneous.T).T
+    box_points_base_coords = box_points_base_coords_homogeneous[:, :3]
+    box_points_base_coords = box_points_base_coords[~np.isnan(box_points_base_coords).any(axis=1)]
+
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(box_points_base_coords)
+    plane_model, inliers = point_cloud.segment_plane(distance_threshold=10, ransac_n=3, num_iterations=1000)
+    plane_points = point_cloud.select_by_index(inliers)
+    plane_points_np = np.asarray(plane_points.points)
+    box_points_base_coords = np.asarray(plane_points.points)
+
+    # center point
+    normal = np.array(plane_model[:3])
+    normal = normal / np.linalg.norm(normal)
+    centroid = np.mean(plane_points_np, axis=0)
+    shifted_points = plane_points_np - centroid
+    u, s, vh = np.linalg.svd(shifted_points)
+    basis_x = vh[0]
+    basis_y = vh[1]
+    projected_2d = np.dot(shifted_points, np.vstack((basis_x, basis_y)).T)
+    min_2d = np.min(projected_2d, axis=0)
+    max_2d = np.max(projected_2d, axis=0)
+    center_2d = (min_2d + max_2d) / 2
+    center_point = centroid + center_2d[0] * basis_x + center_2d[1] * basis_y
+
+    # plane length
+    min_bound = projected_2d.min(axis=0)
+    max_bound = projected_2d.max(axis=0)
+    width = max_bound[0] - min_bound[0]
+    height = max_bound[1] - min_bound[1]
+
+    # paper
+    contours_paper, _ = cv2.findContours(sum_paper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour_paper = max(contours_paper, key=cv2.contourArea)
+    contour_image = sum_paper_mask.copy()
+    contour_image = cv2.cvtColor(contour_image, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(contour_image, contours_paper, -1, (0, 255, 0), 10)
+    cv2.imwrite("ros/fold/outputs/contour_image.png", contour_image)
+    epsilon = 0.02 * cv2.arcLength(max_contour_paper, True)
+    approx = cv2.approxPolyDP(max_contour_paper, epsilon, True)
+    linear_approx_image = sum_paper_mask.copy()
+    linear_approx_image = cv2.cvtColor(linear_approx_image, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(linear_approx_image, approx, -1, (0, 255, 0), 20)
+    cv2.imwrite("ros/fold/outputs/linear_approx_image.png", linear_approx_image)
+    if len(approx) != 4:
+        raise ValueError("Not a rectangular: num of points: {}".format(len(approx)))
+    vertices_paper = approx[:, 0, :]
+    paper_points = []
+    for i in range(4):
+        paper_points.append(coords_to_depth(depth_image, vertices_paper[i][0], vertices_paper[i][1]))
+    paper_points = np.array(paper_points)
+
+    # transformation
+    paper_points_ones = np.ones((paper_points.shape[0], 1))
+    paper_points_homogeneous = np.hstack([paper_points, paper_points_ones])
+    paper_points_base_coords_homogeneous = (base_to_camera_transformation @ paper_points_homogeneous.T).T
+    paper_points_base_coords = paper_points_base_coords_homogeneous[:, :3]
+    paper_points_base_coords = paper_points_base_coords[~np.isnan(paper_points_base_coords).any(axis=1)]
+
+    # graph
+    fig = plt.figure()
+    ax = fig.add_subplot(111,projection='3d')
+    x = box_points_base_coords[:, 0]
+    y = box_points_base_coords[:, 1]
+    z = box_points_base_coords[:, 2]
+    ax.scatter(x, y, z, c='b', marker='o', alpha=0.5, s=0.1)
+    x_paper = paper_points_base_coords[:, 0]
+    y_paper = paper_points_base_coords[:, 1]
+    z_paper = paper_points_base_coords[:, 2]
+    ax.scatter(x_paper, y_paper, z_paper, c='orange', marker='o', alpha=1.0, s=50)
+    num_points = 100
+    for i in range(4):
+        x_values = np.linspace(paper_points_base_coords[i%4][0], paper_points_base_coords[(i+1)%4][0], num_points)
+        y_values = np.linspace(paper_points_base_coords[i%4][1], paper_points_base_coords[(i+1)%4][1], num_points)
+        z_values = np.linspace(paper_points_base_coords[i%4][2], paper_points_base_coords[(i+1)%4][2], num_points)
+        ax.scatter(x_values, y_values, z_values, c='orange', s=10)
+    # draw 3d bbox
+    box_cx = center_point[0]
+    box_cy = center_point[1]
+    # calculate box depth
+    box_top_face_average_z = np.mean(box_points_base_coords, axis=0)[2]
+    paper_average_z = np.mean(paper_points_base_coords, axis=0)[2]
+    depth = box_top_face_average_z - paper_average_z
+    box_cz = paper_average_z + depth / 2
+
+    # box_cz = box_top_face_average_z
+    ax.scatter(box_cx, box_cy, box_cz, c='r', marker='o', alpha=1.0, s=200)
+    x = [box_cx - width / 2, box_cx + width / 2]
+    y = [box_cy - height / 2, box_cy + height / 2]
+    z = [box_cz - depth / 2, box_cz + depth / 2]
+    vertices = np.array([
+        [x[0], y[0], z[0]],
+        [x[1], y[0], z[0]],
+        [x[1], y[1], z[0]],
+        [x[0], y[1], z[0]],
+        [x[0], y[0], z[1]],
+        [x[1], y[0], z[1]],
+        [x[1], y[1], z[1]],
+        [x[0], y[1], z[1]],
+    ])
+    edges = [
+        [0, 1], [1, 2], [2, 3], [3, 0],  # Bottom face
+        [4, 5], [5, 6], [6, 7], [7, 4],  # Top face
+        [0, 4], [1, 5], [2, 6], [3, 7],  # Vertical edges
+    ]
+    for edge in edges:
+        start, end = edge
+        ax.plot(
+            [vertices[start][0], vertices[end][0]],
+            [vertices[start][1], vertices[end][1]],
+            [vertices[start][2], vertices[end][2]],
+            color="b"
+        )
+    ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], color="b")
+
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('z')
+    ax.axis('equal')
+    plt.show()
+
+    # info
+    box_center = np.array([box_cx, box_cy, box_cz])
+    box_length = np.array([width, height, depth])
+    paper_center = np.mean(paper_points_base_coords, axis=0)
+    distances = []
+    for i in range(len(paper_points_base_coords)):
+        for j in range(i + 1, len(paper_points_base_coords)):
+            dist = np.linalg.norm(paper_points_base_coords[i] - paper_points_base_coords[j])
+            distances.append(dist)
+    distances = np.sort(distances)
+    print(distances)
+    paper_length = np.array([distances[0], distances[2]])
+    data = {"box_center": box_center.tolist(),
+            "paper_center": paper_center.tolist(),
+            "box_point": vertices.tolist(),
+            "paper_point": paper_points_base_coords.tolist(),
+            "box_length": box_length.tolist(),
+            "paper_length": paper_length.tolist(),
+    }
+    with open(os.path.join("ros/fold", "target_object_info.yaml"), "w") as yaml_file:
+        yaml.dump(data, yaml_file, default_flow_style=False)

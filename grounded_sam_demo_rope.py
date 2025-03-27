@@ -207,7 +207,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--input_image", type=str, required=False, help="path to image file", default=latest_file_path)
     # parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="Ribbon over the box")
-    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="ribbon over the stripe-patterned box. black stipe-patterned white box")
+    parser.add_argument("--text_prompt", type=str, required=False, help="text prompt", default="rope. plaid pattern box")
     parser.add_argument(
         "--output_dir", "-o", type=str, default="ros/rope/outputs", required=False, help="output directory"
     )
